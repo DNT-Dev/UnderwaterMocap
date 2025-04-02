@@ -106,7 +106,7 @@ public:
     for (int i = 0; i < num_cameras; ++i) {
       int camera_id = i + 1;
       cameras.push_back(
-          Camera(nh_, cv::format("/camera_%d/image_raw", camera_id), cv::format("%s/camera_%d.txt", package_path.c_str(), camera_id),
+          Camera(nh_, cv::format("/camera_%d/image_raw", camera_id), cv::format("%s/calibration_files/camera_%d.txt", package_path.c_str(), camera_id),
                  std::bind(&ArucoDetector::imageCallback, this,
                            std::placeholders::_1, camera_id)));
     }
