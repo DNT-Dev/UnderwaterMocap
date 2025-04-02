@@ -97,13 +97,13 @@ class ArucoDetector {
 public:
   ArucoDetector(ros::NodeHandle &nh, const std::string &calib_file)
       : nh_(nh), it_(nh), objPoints(4, 1, CV_32FC3) {
-    // cam1_ = std::make_unique<Camera>(nh_, "/one/image_raw", calib_file,
-    // std::bind(&ArucoDetector::imageCallback, this, std::placeholders::_1,
-    // "Camera 1"));
-    cam2_ =
-        std::make_unique<Camera>(nh_, "/four/image_raw", "./david.txt",
-                                 std::bind(&ArucoDetector::imageCallback, this,
-                                           std::placeholders::_1, "Camera 2"));
+    cam1_ = std::make_unique<Camera>(nh_, "/one/image_raw", calib_file,
+    std::bind(&ArucoDetector::imageCallback, this, std::placeholders::_1,
+    "Camera 1"));
+    //cam2_ =
+    //    std::make_unique<Camera>(nh_, "/four/image_raw", "./david.txt",
+    //                             std::bind(&ArucoDetector::imageCallback, this,
+    //                                       std::placeholders::_1, "Camera 2"));
 
     objPoints.ptr<cv::Vec3f>(0)[0] =
         cv::Vec3f(-markerLength / 2.f, markerLength / 2.f, 0);
