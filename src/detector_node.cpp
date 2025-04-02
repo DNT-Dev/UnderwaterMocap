@@ -1,4 +1,5 @@
 #include "opencv2/aruco/dictionary.hpp"
+#include <auv_mocap/ArucoPoseArray.h>
 #include <cstdio>
 #include <cv_bridge/cv_bridge.h>
 #include <fstream>
@@ -10,15 +11,16 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
 #include <sstream>
+#include <ros/package.h>
 #include <tf/tf.h>
 
-void setQuaternionFromRvec(cv::Vec<double, 3> &rvec, geometry_msgs::Quaternion &q) {
+void setQuaternionFromRvec(cv::Vec<double, 3> &rvec,
+                           geometry_msgs::Quaternion &q) {
   cv::Mat R;
   cv::Rodrigues(rvec, R);
-  tf::Matrix3x3 tfR(
-      R.at<double>(0, 0), R.at<double>(0, 1), R.at<double>(0, 2),
-      R.at<double>(1, 0), R.at<double>(1, 1), R.at<double>(1, 2),
-      R.at<double>(2, 0), R.at<double>(2, 1), R.at<double>(2, 2));
+  tf::Matrix3x3 tfR(R.at<double>(0, 0), R.at<double>(0, 1), R.at<double>(0, 2),
+                    R.at<double>(1, 0), R.at<double>(1, 1), R.at<double>(1, 2),
+                    R.at<double>(2, 0), R.at<double>(2, 1), R.at<double>(2, 2));
   tf::Quaternion tfQ;
   tfR.getRotation(tfQ);
   q.x = tfQ.x();
@@ -85,25 +87,35 @@ private:
       distCoeffs_ = cv::Mat(1, dist_coeffs_values.size(), CV_64F,
                             dist_coeffs_values.data())
                         .clone();
-      ROS_INFO_STREAM("Loaded Camera Matrix:\n" << cameraMatrix_);
-      ROS_INFO_STREAM("Loaded Distortion Coefficients:\n" << distCoeffs_);
+      ROS_INFO_STREAM("Loaded Camera Matrix:\n" << cameraMatrix_ << "Loaded "
+                                                  "Distortion Coefficients:\n"
+                                               << distCoeffs_);
     } else {
-      ROS_ERROR("Invalid calibration file format.");
+      ROS_ERROR_STREAM("Invalid calibration file format. FAILED TRYING TO LOAD " << calib_file);
     }
   }
 };
 
 class ArucoDetector {
 public:
-  ArucoDetector(ros::NodeHandle &nh, const std::string &calib_file)
+  ArucoDetector(ros::NodeHandle &nh, int num_cameras)
       : nh_(nh), it_(nh), objPoints(4, 1, CV_32FC3) {
-    cam1_ = std::make_unique<Camera>(nh_, "/one/image_raw", calib_file,
-    std::bind(&ArucoDetector::imageCallback, this, std::placeholders::_1,
-    "Camera 1"));
-    //cam2_ =
-    //    std::make_unique<Camera>(nh_, "/four/image_raw", "./david.txt",
-    //                             std::bind(&ArucoDetector::imageCallback, this,
-    //                                       std::placeholders::_1, "Camera 2"));
+
+        std::string package_path = ros::package::getPath("auv_mocap");
+
+    for (int i = 0; i < num_cameras; ++i) {
+      int camera_id = i + 1;
+      cameras.push_back(
+          Camera(nh_, cv::format("/camera_%d/image_raw", camera_id), cv::format("%s/camera_%d.txt", package_path.c_str(), camera_id),
+                 std::bind(&ArucoDetector::imageCallback, this,
+                           std::placeholders::_1, camera_id)));
+    }
+    // cam2_ =
+    //     std::make_unique<Camera>(nh_, "/four/image_raw", "./david.txt",
+    //                              std::bind(&ArucoDetector::imageCallback,
+    //                              this,
+    //                                        std::placeholders::_1, "Camera
+    //                                        2"));
 
     objPoints.ptr<cv::Vec3f>(0)[0] =
         cv::Vec3f(-markerLength / 2.f, markerLength / 2.f, 0);
@@ -120,14 +132,14 @@ public:
 private:
   ros::NodeHandle nh_;
   image_transport::ImageTransport it_;
-  std::unique_ptr<Camera> cam1_, cam2_;
-  std::map<int, ros::Publisher> marker_publishers_;
+  std::map<std::string, ros::Publisher> camera_publishers_;
   cv::Mat objPoints;
+  std::vector<Camera> cameras;
   // Length of the marker side in meters
   const float markerLength = 0.15f;
-
   void imageCallback(const sensor_msgs::ImageConstPtr &msg,
-                     const std::string &cameraName) {
+                     const int camera_id) {
+    const std::string cameraName = cv::format("Camera %d", camera_id);
     cv::Mat imageCopy;
     try {
       cv::Mat image = cv_bridge::toCvShare(msg, "bgr8")->image;
@@ -139,12 +151,8 @@ private:
       image.copyTo(imageCopy);
 
       if (!markerIds.empty()) {
-        const cv::Mat &cameraMatrix = (cameraName == "Camera 1" && cam1_)
-                                          ? cam1_->getCameraMatrix()
-                                          : cam2_->getCameraMatrix();
-        const cv::Mat &distCoeffs = (cameraName == "Camera 1" && cam1_)
-                                        ? cam1_->getDistCoeffs()
-                                        : cam2_->getDistCoeffs();
+        const cv::Mat &cameraMatrix = cameras[camera_id - 1].getCameraMatrix();
+        const cv::Mat &distCoeffs = cameras[camera_id - 1].getDistCoeffs();
 
         std::vector<cv::Vec3d> rvecs(markerIds.size()), tvecs(markerIds.size());
         for (size_t i = 0; i < markerIds.size(); ++i) {
@@ -152,32 +160,42 @@ private:
                        rvecs.at(i), tvecs.at(i));
         }
 
+        // Create a single message per camera
+        auv_mocap::ArucoPoseArray pose_array_msg;
+        pose_array_msg.header.stamp = ros::Time::now();
+        pose_array_msg.header.frame_id = cameraName;
+
         for (size_t i = 0; i < markerIds.size(); ++i) {
           cv::drawFrameAxes(imageCopy, cameraMatrix, distCoeffs, rvecs[i],
                             tvecs[i], markerLength * 1.5f, 2);
-          int id = markerIds[i];
-          if (marker_publishers_.find(id) == marker_publishers_.end()) {
-            marker_publishers_[id] = nh_.advertise<geometry_msgs::PoseStamped>(
-                "/aruco/marker_" + std::to_string(id), 10);
-          }
-          geometry_msgs::PoseStamped pose_msg;
+
+          auv_mocap::ArucoPose pose_msg;
           pose_msg.header.stamp = ros::Time::now();
+          pose_msg.header.frame_id = cameraName;
+          pose_msg.header.seq = i;
+          pose_msg.id = markerIds[i];
           pose_msg.pose.position.x = tvecs[i][0];
           pose_msg.pose.position.y = tvecs[i][1];
           pose_msg.pose.position.z = tvecs[i][2];
+
           geometry_msgs::Quaternion q;
           setQuaternionFromRvec(rvecs[i], q);
           pose_msg.pose.orientation = q;
-          marker_publishers_[id].publish(pose_msg);
-          printf("PUBLISHED POSE FOR MARKER %d: (%.2f, %.2f, %.2f)\n", id,
-                 tvecs[i][0], tvecs[i][1], tvecs[i][2]);
+
+          pose_array_msg.poses.push_back(pose_msg);
         }
+
+        // Publish the ArucoPoseArray message
+        if (camera_publishers_.find(cameraName) == camera_publishers_.end()) {
+          camera_publishers_[cameraName] =
+              nh_.advertise<auv_mocap::ArucoPoseArray>(
+                  cv::format("/cam_%d/aruco_pose", camera_id), 10);
+        }
+        camera_publishers_[cameraName].publish(pose_array_msg);
       }
 
       if (!markerIds.empty()) {
         cv::aruco::drawDetectedMarkers(imageCopy, markerCorners, markerIds);
-      } else {
-        // ROS_INFO("NO DETECTED MARKERS\n");
       }
 
       cv::imshow(cameraName, imageCopy);
@@ -192,11 +210,11 @@ private:
 int main(int argc, char **argv) {
   ros::init(argc, argv, "aruco_detector");
   ros::NodeHandle nh;
-  if (argc < 2) {
-    ROS_ERROR("Usage: rosrun <package_name> aruco_detector <calibration_file>");
-    return -1;
-  }
-  ArucoDetector detector(nh, argv[1]);
+
+  int num_cameras;
+  nh.param("num_cameras", num_cameras, 1);
+
+  ArucoDetector detector(nh, num_cameras);
   detector.spin();
   return 0;
 }
