@@ -189,7 +189,7 @@ private:
         if (camera_publishers_.find(cameraName) == camera_publishers_.end()) {
           camera_publishers_[cameraName] =
               nh_.advertise<auv_mocap::ArucoPoseArray>(
-                  cv::format("/cam_%d/aruco_pose", camera_id), 10);
+                  cv::format("/camera_%d/aruco_pose", camera_id), 10);
         }
         camera_publishers_[cameraName].publish(pose_array_msg);
       }
